@@ -70,6 +70,12 @@ class GardenGame {
         // Add temperature unit preference
         this.temperatureUnit = localStorage.getItem('temperatureUnit') || 'F';
 
+        // Particle systems
+        this.particles = {
+            pollen: [],
+            butterflies: []
+        };
+
         this.init();
         this.setupScene();
         this.setupControls();
@@ -370,6 +376,143 @@ class GardenGame {
 
         // Create and place obstacles
         this.createObstacles();
+
+        // Add ambient particles after setting up the scene
+        this.setupAmbientParticles();
+    }
+
+    setupAmbientParticles() {
+        // Create pollen particles
+        const pollenCount = 100;
+        const pollenGeometry = new THREE.SphereGeometry(0.02, 8, 8);
+        const pollenMaterial = new THREE.MeshStandardMaterial({
+            color: 0xFFFFFF,
+            transparent: true,
+            opacity: 0.6,
+            emissive: 0xFFFFFF,
+            emissiveIntensity: 0.2
+        });
+
+        for (let i = 0; i < pollenCount; i++) {
+            const pollen = new THREE.Mesh(pollenGeometry, pollenMaterial);
+            // Random position within a 40x40x10 box
+            pollen.position.set(
+                (Math.random() - 0.5) * 40,
+                Math.random() * 10,
+                (Math.random() - 0.5) * 40
+            );
+            pollen.velocity = new THREE.Vector3(
+                (Math.random() - 0.5) * 0.02,
+                (Math.random() - 0.5) * 0.01,
+                (Math.random() - 0.5) * 0.02
+            );
+            this.particles.pollen.push(pollen);
+            this.scene.add(pollen);
+        }
+
+        // Create butterflies
+        const butterflyCount = 15;
+        const butterflyGeometry = new THREE.BufferGeometry();
+        const butterflyMaterial = new THREE.MeshBasicMaterial({
+            color: 0xFF69B4,
+            side: THREE.DoubleSide
+        });
+
+        // Create butterfly wing shape
+        const wingShape = new THREE.Shape();
+        wingShape.moveTo(0, 0);
+        wingShape.quadraticCurveTo(0.3, 0.2, 0.3, 0);
+        wingShape.quadraticCurveTo(0.3, -0.2, 0, 0);
+
+        const wingGeometry = new THREE.ShapeGeometry(wingShape);
+
+        for (let i = 0; i < butterflyCount; i++) {
+            const butterfly = new THREE.Group();
+            
+            // Create left and right wings
+            const leftWing = new THREE.Mesh(wingGeometry, butterflyMaterial);
+            const rightWing = new THREE.Mesh(wingGeometry, butterflyMaterial);
+            
+            // Position wings
+            leftWing.position.x = -0.3;
+            rightWing.position.x = 0.3;
+            rightWing.rotation.y = Math.PI;
+
+            butterfly.add(leftWing);
+            butterfly.add(rightWing);
+
+            // Random position
+            butterfly.position.set(
+                (Math.random() - 0.5) * 40,
+                1 + Math.random() * 4,
+                (Math.random() - 0.5) * 40
+            );
+
+            // Add movement properties
+            butterfly.velocity = new THREE.Vector3(
+                (Math.random() - 0.5) * 0.1,
+                (Math.random() - 0.5) * 0.05,
+                (Math.random() - 0.5) * 0.1
+            );
+            butterfly.wingAngle = 0;
+            butterfly.flapSpeed = 0.1 + Math.random() * 0.1;
+
+            this.particles.butterflies.push(butterfly);
+            this.scene.add(butterfly);
+        }
+    }
+
+    updateParticles(deltaTime) {
+        // Update pollen particles
+        this.particles.pollen.forEach(pollen => {
+            pollen.position.add(pollen.velocity);
+            
+            // Add slight random movement
+            pollen.velocity.x += (Math.random() - 0.5) * 0.001;
+            pollen.velocity.z += (Math.random() - 0.5) * 0.001;
+            
+            // Wrap around boundaries
+            if (pollen.position.x > 20) pollen.position.x = -20;
+            if (pollen.position.x < -20) pollen.position.x = 20;
+            if (pollen.position.z > 20) pollen.position.z = -20;
+            if (pollen.position.z < -20) pollen.position.z = 20;
+            if (pollen.position.y > 10) pollen.position.y = 0;
+            if (pollen.position.y < 0) pollen.position.y = 10;
+        });
+
+        // Update butterflies
+        this.particles.butterflies.forEach(butterfly => {
+            // Update position
+            butterfly.position.add(butterfly.velocity);
+            
+            // Wing flapping animation
+            butterfly.wingAngle += butterfly.flapSpeed;
+            butterfly.children[0].rotation.z = Math.sin(butterfly.wingAngle) * 0.5;
+            butterfly.children[1].rotation.z = -Math.sin(butterfly.wingAngle) * 0.5;
+            
+            // Random movement changes
+            butterfly.velocity.x += (Math.random() - 0.5) * 0.01;
+            butterfly.velocity.y += (Math.random() - 0.5) * 0.005;
+            butterfly.velocity.z += (Math.random() - 0.5) * 0.01;
+            
+            // Limit velocity
+            butterfly.velocity.clampLength(0, 0.1);
+            
+            // Wrap around boundaries
+            if (butterfly.position.x > 20) butterfly.position.x = -20;
+            if (butterfly.position.x < -20) butterfly.position.x = 20;
+            if (butterfly.position.z > 20) butterfly.position.z = -20;
+            if (butterfly.position.z < -20) butterfly.position.z = 20;
+            if (butterfly.position.y > 5) butterfly.position.y = 1;
+            if (butterfly.position.y < 1) butterfly.position.y = 5;
+
+            // Rotate butterfly to face movement direction
+            butterfly.lookAt(
+                butterfly.position.x + butterfly.velocity.x,
+                butterfly.position.y + butterfly.velocity.y,
+                butterfly.position.z + butterfly.velocity.z
+            );
+        });
     }
 
     createTree(x, z) {
@@ -730,10 +873,12 @@ class GardenGame {
 
     animate() {
         requestAnimationFrame(() => this.animate());
+        const deltaTime = (performance.now() - this.prevTime) / 1000;
         this.updateMovement();
         this.updateCursorHighlight();
-        // Remove weather update from animate loop - it's now handled by interval
+        this.updateParticles(deltaTime);
         this.renderer.render(this.scene, this.camera);
+        this.prevTime = performance.now();
     }
 
     createObstacles() {

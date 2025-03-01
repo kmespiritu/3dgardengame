@@ -61,6 +61,15 @@ class GardenGame {
         this.tilledSoil = new Map(); // Track tilled soil locations
         this.seedTooltip = null; // Add tooltip reference
 
+        // Add weather system
+        this.weatherWidget = null;
+        this.weatherData = null;
+        this.lastWeatherUpdate = 0;
+        this.weatherUpdateInterval = 1800000; // 30 minutes in milliseconds
+
+        // Add temperature unit preference
+        this.temperatureUnit = localStorage.getItem('temperatureUnit') || 'F';
+
         this.init();
         this.setupScene();
         this.setupControls();
@@ -100,6 +109,10 @@ class GardenGame {
             this.camera.updateProjectionMatrix();
             this.renderer.setSize(window.innerWidth, window.innerHeight);
         });
+
+        // Setup weather widget
+        this.setupWeatherWidget();
+        this.updateWeather();
     }
 
     setupControls() {
@@ -719,6 +732,7 @@ class GardenGame {
         requestAnimationFrame(() => this.animate());
         this.updateMovement();
         this.updateCursorHighlight();
+        // Remove weather update from animate loop - it's now handled by interval
         this.renderer.render(this.scene, this.camera);
     }
 
@@ -1843,6 +1857,363 @@ class GardenGame {
 
     openSettings() {
         console.log('Settings functionality to be implemented');
+    }
+
+    setupWeatherWidget() {
+        const widget = document.createElement('div');
+        widget.id = 'weather-widget';
+        widget.style.position = 'fixed';
+        widget.style.top = '20px';
+        widget.style.left = '20px';
+        widget.style.backgroundColor = 'rgba(0, 0, 0, 0.75)';
+        widget.style.color = 'white';
+        widget.style.padding = '20px';
+        widget.style.borderRadius = '15px';
+        widget.style.fontFamily = 'Arial, sans-serif';
+        widget.style.zIndex = '1000';
+        widget.style.minWidth = '250px';
+        widget.style.backdropFilter = 'blur(10px)';
+        widget.style.boxShadow = '0 4px 6px rgba(0, 0, 0, 0.1)';
+        widget.style.border = '1px solid rgba(255, 255, 255, 0.1)';
+        widget.style.display = 'flex';
+        widget.style.flexDirection = 'column';
+        widget.style.gap = '15px';
+        widget.style.transition = 'all 0.3s ease';
+
+        // Add location display
+        const locationDiv = document.createElement('div');
+        locationDiv.id = 'location-display';
+        locationDiv.style.fontSize = '18px';
+        locationDiv.style.fontWeight = 'bold';
+        locationDiv.style.textAlign = 'center';
+        locationDiv.style.marginBottom = '5px';
+        widget.appendChild(locationDiv);
+
+        // Add temperature unit toggle
+        const toggleContainer = document.createElement('div');
+        toggleContainer.style.display = 'flex';
+        toggleContainer.style.justifyContent = 'center';
+        toggleContainer.style.gap = '10px';
+        toggleContainer.style.marginBottom = '10px';
+
+        const celsiusBtn = document.createElement('button');
+        celsiusBtn.textContent = '°C';
+        const fahrenheitBtn = document.createElement('button');
+        fahrenheitBtn.textContent = '°F';
+
+        [celsiusBtn, fahrenheitBtn].forEach(btn => {
+            btn.style.padding = '5px 10px';
+            btn.style.border = 'none';
+            btn.style.borderRadius = '5px';
+            btn.style.cursor = 'pointer';
+            btn.style.transition = 'all 0.2s';
+            btn.style.minWidth = '40px';
+        });
+
+        const updateToggleButtons = () => {
+            [celsiusBtn, fahrenheitBtn].forEach(btn => {
+                if (btn.textContent.includes(this.temperatureUnit)) {
+                    btn.style.backgroundColor = 'rgba(255, 255, 255, 0.3)';
+                    btn.style.color = 'white';
+                } else {
+                    btn.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+                    btn.style.color = 'rgba(255, 255, 255, 0.7)';
+                }
+            });
+        };
+
+        celsiusBtn.onclick = () => {
+            this.temperatureUnit = 'C';
+            localStorage.setItem('temperatureUnit', 'C');
+            updateToggleButtons();
+            if (this.weatherData) this.updateWeatherDisplay();
+        };
+
+        fahrenheitBtn.onclick = () => {
+            this.temperatureUnit = 'F';
+            localStorage.setItem('temperatureUnit', 'F');
+            updateToggleButtons();
+            if (this.weatherData) this.updateWeatherDisplay();
+        };
+
+        toggleContainer.appendChild(celsiusBtn);
+        toggleContainer.appendChild(fahrenheitBtn);
+        widget.appendChild(toggleContainer);
+
+        updateToggleButtons();
+
+        // Loading state
+        const loadingDiv = document.createElement('div');
+        loadingDiv.id = 'weather-loading';
+        loadingDiv.textContent = 'Loading weather data...';
+        loadingDiv.style.textAlign = 'center';
+        loadingDiv.style.padding = '10px';
+        widget.appendChild(loadingDiv);
+
+        // Current date and time
+        const dateTime = document.createElement('div');
+        dateTime.id = 'date-time';
+        dateTime.style.fontSize = '16px';
+        dateTime.style.fontWeight = 'bold';
+        dateTime.style.borderBottom = '2px solid rgba(255, 255, 255, 0.3)';
+        dateTime.style.paddingBottom = '10px';
+        dateTime.style.textAlign = 'center';
+        widget.appendChild(dateTime);
+
+        // Current weather
+        const current = document.createElement('div');
+        current.id = 'current-weather';
+        current.style.display = 'none'; // Hide initially
+        current.style.alignItems = 'center';
+        current.style.gap = '15px';
+        current.style.padding = '10px 0';
+        widget.appendChild(current);
+
+        // Forecast container
+        const forecast = document.createElement('div');
+        forecast.id = 'forecast';
+        forecast.style.display = 'none'; // Hide initially
+        forecast.style.gap = '15px';
+        forecast.style.marginTop = '10px';
+        forecast.style.borderTop = '2px solid rgba(255, 255, 255, 0.3)';
+        forecast.style.paddingTop = '15px';
+        forecast.style.justifyContent = 'space-between';
+        widget.appendChild(forecast);
+
+        // Error message container
+        const errorDiv = document.createElement('div');
+        errorDiv.id = 'weather-error';
+        errorDiv.style.display = 'none';
+        errorDiv.style.color = '#ff6b6b';
+        errorDiv.style.textAlign = 'center';
+        errorDiv.style.padding = '10px';
+        widget.appendChild(errorDiv);
+
+        document.body.appendChild(widget);
+        this.weatherWidget = widget;
+
+        // Update date and time every second
+        setInterval(() => this.updateDateTime(), 1000);
+        
+        // Initial weather update
+        this.updateWeather();
+        
+        // Refresh weather every 30 minutes
+        setInterval(() => this.updateWeather(), this.weatherUpdateInterval);
+    }
+
+    convertTemperature(celsius) {
+        return this.temperatureUnit === 'F' ? 
+            Math.round(celsius * 9/5 + 32) : 
+            Math.round(celsius);
+    }
+
+    async updateWeather() {
+        // Check if enough time has passed since last update
+        const now = Date.now();
+        if (this.lastWeatherUpdate && (now - this.lastWeatherUpdate) < this.weatherUpdateInterval) {
+            console.log('Skipping weather update - too soon since last update');
+            return;
+        }
+
+        try {
+            const loadingDiv = document.getElementById('weather-loading');
+            const errorDiv = document.getElementById('weather-error');
+            const currentWeather = document.getElementById('current-weather');
+            const forecast = document.getElementById('forecast');
+
+            // Show loading, hide others
+            if (loadingDiv) loadingDiv.style.display = 'block';
+            if (errorDiv) errorDiv.style.display = 'none';
+            if (currentWeather) currentWeather.style.display = 'none';
+            if (forecast) forecast.style.display = 'none';
+
+            // Get current location
+            console.log('Requesting location...');
+            const position = await this.getCurrentLocation();
+            console.log('Location received:', position.coords.latitude, position.coords.longitude);
+            
+            const { latitude, longitude } = position.coords;
+            const apiKey = '8e61cd2673f2a7d72856bdeedad1d5d8';
+
+            // Fetch current weather
+            console.log('Fetching current weather...');
+            const currentWeatherUrl = `https://api.openweathermap.org/data/2.5/weather?lat=${latitude}&lon=${longitude}&appid=${apiKey}&units=metric`;
+            const currentResponse = await fetch(currentWeatherUrl);
+
+            if (!currentResponse.ok) {
+                const errorText = await currentResponse.text();
+                throw new Error(`Current weather API error (${currentResponse.status}): ${errorText}`);
+            }
+
+            const currentData = await currentResponse.json();
+            console.log('Current weather data received');
+
+            // Fetch forecast
+            console.log('Fetching forecast...');
+            const forecastUrl = `https://api.openweathermap.org/data/2.5/forecast?lat=${latitude}&lon=${longitude}&appid=${apiKey}&units=metric`;
+            const forecastResponse = await fetch(forecastUrl);
+
+            if (!forecastResponse.ok) {
+                const errorText = await forecastResponse.text();
+                throw new Error(`Forecast API error (${forecastResponse.status}): ${errorText}`);
+            }
+
+            const forecastData = await forecastResponse.json();
+            console.log('Forecast data received');
+
+            // Update last weather update timestamp ONLY if successful
+            this.lastWeatherUpdate = now;
+
+            // Combine the data
+            this.weatherData = {
+                current: currentData,
+                forecast: forecastData
+            };
+            
+            // Hide loading, show weather
+            if (loadingDiv) loadingDiv.style.display = 'none';
+            this.updateWeatherDisplay();
+
+        } catch (error) {
+            console.error('Error fetching weather:', error);
+            const errorDiv = document.getElementById('weather-error');
+            const loadingDiv = document.getElementById('weather-loading');
+            if (errorDiv) {
+                errorDiv.style.display = 'block';
+                errorDiv.textContent = `Weather Error: ${error.message}`;
+                errorDiv.style.color = '#ff6b6b';
+                errorDiv.style.padding = '10px';
+                errorDiv.style.backgroundColor = 'rgba(255, 0, 0, 0.1)';
+                errorDiv.style.borderRadius = '5px';
+                errorDiv.style.margin = '10px 0';
+            }
+            if (loadingDiv) loadingDiv.style.display = 'none';
+        }
+    }
+
+    getCurrentLocation() {
+        return new Promise((resolve, reject) => {
+            if (!navigator.geolocation) {
+                reject(new Error('Geolocation is not supported by your browser'));
+                return;
+            }
+
+            navigator.geolocation.getCurrentPosition(
+                resolve,
+                (error) => {
+                    console.error('Geolocation error:', error);
+                    reject(new Error(error.message));
+                },
+                {
+                    enableHighAccuracy: true,
+                    timeout: 10000,
+                    maximumAge: 0
+                }
+            );
+        });
+    }
+
+    updateWeatherDisplay() {
+        if (!this.weatherData || !this.weatherData.current) return;
+
+        const currentWeather = document.getElementById('current-weather');
+        const current = this.weatherData.current;
+        
+        // Update location display
+        const locationDiv = document.getElementById('location-display');
+        if (locationDiv) {
+            locationDiv.textContent = `${current.name}, ${current.sys.country}`;
+        }
+        
+        // Show the weather container
+        currentWeather.style.display = 'flex';
+        
+        const temp = this.convertTemperature(current.main.temp);
+        const tempHigh = this.convertTemperature(current.main.temp_max);
+        const tempLow = this.convertTemperature(current.main.temp_min);
+        
+        currentWeather.innerHTML = `
+            <div style="text-align: center; flex: 1;">
+                <div style="font-size: 32px; font-weight: bold; margin-bottom: 5px;">
+                    ${temp}°${this.temperatureUnit}
+                </div>
+                <div style="font-size: 16px; margin-bottom: 5px;">
+                    ${current.weather[0].main}
+                </div>
+                <div style="font-size: 14px; opacity: 0.8;">
+                    H: ${tempHigh}°${this.temperatureUnit}
+                    L: ${tempLow}°${this.temperatureUnit}
+                </div>
+            </div>
+            <div style="background: rgba(255, 255, 255, 0.1); padding: 10px; border-radius: 10px;">
+                <img 
+                    src="https://openweathermap.org/img/wn/${current.weather[0].icon}@2x.png"
+                    style="width: 60px; height: 60px;"
+                />
+            </div>
+        `;
+
+        // Update forecast
+        const forecast = document.getElementById('forecast');
+        forecast.style.display = 'flex';
+        forecast.innerHTML = '';
+
+        // Get next 3 days from forecast data
+        const dailyForecasts = this.weatherData.forecast.list
+            .filter(item => new Date(item.dt * 1000).getHours() === 12)
+            .slice(0, 3);
+
+        dailyForecasts.forEach(day => {
+            const date = new Date(day.dt * 1000);
+            const dayElement = document.createElement('div');
+            dayElement.style.flex = '1';
+            dayElement.style.textAlign = 'center';
+            dayElement.style.background = 'rgba(255, 255, 255, 0.05)';
+            dayElement.style.padding = '10px';
+            dayElement.style.borderRadius = '10px';
+            dayElement.style.transition = 'all 0.3s ease';
+            
+            const temp = this.convertTemperature(day.main.temp);
+            
+            dayElement.innerHTML = `
+                <div style="font-weight: bold; margin-bottom: 5px;">
+                    ${date.toLocaleDateString(undefined, { weekday: 'short' })}
+                </div>
+                <img 
+                    src="https://openweathermap.org/img/wn/${day.weather[0].icon}.png"
+                    style="width: 40px; height: 40px;"
+                />
+                <div style="font-size: 14px;">${temp}°${this.temperatureUnit}</div>
+            `;
+            
+            // Hover effect
+            dayElement.addEventListener('mouseenter', () => {
+                dayElement.style.background = 'rgba(255, 255, 255, 0.1)';
+            });
+            dayElement.addEventListener('mouseleave', () => {
+                dayElement.style.background = 'rgba(255, 255, 255, 0.05)';
+            });
+            
+            forecast.appendChild(dayElement);
+        });
+    }
+
+    updateDateTime() {
+        const dateTime = document.getElementById('date-time');
+        if (dateTime) {
+            const now = new Date();
+            const options = { 
+                weekday: 'long', 
+                year: 'numeric', 
+                month: 'long', 
+                day: 'numeric',
+                hour: '2-digit', 
+                minute: '2-digit',
+                second: '2-digit'
+            };
+            dateTime.textContent = now.toLocaleDateString(undefined, options);
+        }
     }
 }
 

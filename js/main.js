@@ -57,6 +57,7 @@ class GardenGame {
         this.selectedSeed = null;
         this.wateringCount = new Map(); // Track watering for each plant
         this.tilledSoil = new Map(); // Track tilled soil locations
+        this.seedTooltip = null; // Add tooltip reference
 
         this.init();
         this.setupScene();
@@ -149,6 +150,12 @@ class GardenGame {
 
             const key = `${gridPosition.x},${gridPosition.z}`;
             
+            // Handle planting if a seed is selected
+            if (this.selectedSeed && this.tilledSoil.has(key) && !this.plants.has(key)) {
+                this.plantSeed(key, gridPosition);
+                return; // Return after planting to prevent other actions
+            }
+
             switch (this.selectedTool) {
                 case 'hoe':
                     this.tillSoil(key, gridPosition);
@@ -171,11 +178,6 @@ class GardenGame {
                         }
                     }
                     break;
-            }
-
-            // Handle planting if a seed is selected
-            if (this.selectedSeed && this.tilledSoil.has(key)) {
-                this.plantSeed(key, gridPosition);
             }
 
             // Handle harvesting
@@ -481,6 +483,21 @@ class GardenGame {
                 }
             }
         });
+
+        // Create seed tooltip
+        const seedTooltip = document.createElement('div');
+        seedTooltip.style.position = 'fixed';
+        seedTooltip.style.bottom = '20px';
+        seedTooltip.style.left = '20px';
+        seedTooltip.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+        seedTooltip.style.color = 'white';
+        seedTooltip.style.padding = '10px';
+        seedTooltip.style.borderRadius = '5px';
+        seedTooltip.style.display = 'none';
+        seedTooltip.style.zIndex = '1000';
+        seedTooltip.style.fontFamily = 'Arial, sans-serif';
+        document.body.appendChild(seedTooltip);
+        this.seedTooltip = seedTooltip;
     }
 
     setupInventoryUI() {
@@ -620,6 +637,7 @@ class GardenGame {
             if (this.isPlaying) {
                 this.controls.lock();
             }
+            this.updateSeedTooltip(); // Update tooltip when closing inventory
         }
     }
 
@@ -882,15 +900,15 @@ class GardenGame {
         if (this.plants.has(key) || !this.inventory[this.selectedSeed] || 
             this.inventory[this.selectedSeed].count <= 0) return;
 
-        // Create plant visual
-        const plantGeometry = new THREE.SphereGeometry(0.2, 8, 8);
+        // Create initial plant visual (small sprout)
+        const plantGeometry = new THREE.ConeGeometry(0.1, 0.2, 8);
         const plantMaterial = new THREE.MeshStandardMaterial({
-            color: 0x228B22,
+            color: 0x90EE90, // Light green
             roughness: 1,
             metalness: 0
         });
         const plant = new THREE.Mesh(plantGeometry, plantMaterial);
-        plant.position.set(position.x, 0.2, position.z);
+        plant.position.set(position.x, 0.1, position.z);
         this.scene.add(plant);
 
         // Store plant data
@@ -898,28 +916,27 @@ class GardenGame {
             mesh: plant,
             type: this.selectedSeed,
             growth: 0,
-            waterCount: 0
+            waterCount: 0,
+            isHarvestable: false
         });
 
         // Decrease seed count
         this.inventory[this.selectedSeed].count--;
         this.updateInventoryDisplay();
+        this.updateSeedTooltip();
     }
 
     waterPlant(key) {
         if (!this.plants.has(key)) return;
 
         const plant = this.plants.get(key);
-        if (plant.waterCount >= 3 || plant.growth >= 1) return;
+        if (plant.waterCount >= 3 || plant.isHarvestable) return;
 
         // Increment water count
         plant.waterCount++;
         
-        // Update growth
-        if (plant.waterCount === 3) {
-            plant.growth = 1;
-            this.growPlant(key, plant);
-        }
+        // Update growth stage
+        this.growPlant(key, plant);
 
         // Visual feedback for watering
         this.createWaterEffect(plant.mesh.position);
@@ -955,32 +972,344 @@ class GardenGame {
     }
 
     growPlant(key, plant) {
-        // Scale up the plant
-        const growthAnimation = {
-            scale: 1,
-            opacity: 1
-        };
+        const growthStep = plant.waterCount / 3;
+        
+        // Remove existing plant mesh
+        this.scene.remove(plant.mesh);
+        
+        // Create new plant group
+        const group = new THREE.Group();
+        
+        switch (plant.type) {
+            case 'tomato':
+                if (growthStep === 1) {
+                    // Final stage - full tomato plant
+                    this.createTomatoPlant(plant);
+                } else {
+                    // Growing stages - stem gets taller, leaves appear, then tomatoes
+                    const stemHeight = 0.3 + (growthStep * 0.7);
+                    const stemGeometry = new THREE.CylinderGeometry(0.03, 0.05, stemHeight, 8);
+                    const stemMaterial = new THREE.MeshStandardMaterial({ color: 0x228B22 });
+                    const stem = new THREE.Mesh(stemGeometry, stemMaterial);
+                    stem.position.y = stemHeight/2;
+                    group.add(stem);
 
-        const duration = 2000;
-        const startTime = performance.now();
+                    // Add leaves after first watering
+                    if (growthStep > 0.33) {
+                        const leafGeometry = new THREE.PlaneGeometry(0.15, 0.2);
+                        const leafMaterial = new THREE.MeshStandardMaterial({ 
+                            color: 0x228B22,
+                            side: THREE.DoubleSide
+                        });
+                        
+                        for (let i = 0; i < 2; i++) {
+                            const leaf = new THREE.Mesh(leafGeometry, leafMaterial);
+                            leaf.position.set(
+                                Math.sin(i * Math.PI) * 0.1,
+                                stemHeight * 0.6,
+                                Math.cos(i * Math.PI) * 0.1
+                            );
+                            leaf.rotation.set(Math.PI/6, i * Math.PI, 0);
+                            group.add(leaf);
+                        }
+                    }
+                }
+                break;
+                
+            case 'corn':
+                if (growthStep === 1) {
+                    // Final stage - full corn plant
+                    this.createCornPlant(plant);
+                } else {
+                    // Growing stages - tall thin stalk that grows taller
+                    const stalkHeight = 0.5 + (growthStep * 1.5);
+                    const stalkGeometry = new THREE.CylinderGeometry(0.03, 0.05, stalkHeight, 8);
+                    const stalkMaterial = new THREE.MeshStandardMaterial({ color: 0x90EE90 });
+                    const stalk = new THREE.Mesh(stalkGeometry, stalkMaterial);
+                    stalk.position.y = stalkHeight/2;
+                    group.add(stalk);
 
-        const animate = (currentTime) => {
-            const elapsed = currentTime - startTime;
-            const progress = Math.min(elapsed / duration, 1);
+                    // Add leaves after first watering
+                    if (growthStep > 0.33) {
+                        const leafGeometry = new THREE.PlaneGeometry(0.1 + growthStep * 0.2, 0.4);
+                        const leafMaterial = new THREE.MeshStandardMaterial({ 
+                            color: 0x90EE90,
+                            side: THREE.DoubleSide
+                        });
+                        
+                        for (let i = 0; i < 3; i++) {
+                            const leaf = new THREE.Mesh(leafGeometry, leafMaterial);
+                            leaf.position.set(
+                                0,
+                                stalkHeight * (0.3 + i * 0.2),
+                                0
+                            );
+                            leaf.rotation.set(0, i * Math.PI/1.5, Math.PI/6);
+                            group.add(leaf);
+                        }
+                    }
+                }
+                break;
+                
+            case 'melon':
+                if (growthStep === 1) {
+                    // Final stage - full melon plant
+                    this.createMelonPlant(plant);
+                } else {
+                    // Growing stages - spreading vines with small leaves
+                    const vineLength = 0.2 + (growthStep * 0.3);
+                    const vineGeometry = new THREE.CylinderGeometry(0.02, 0.02, vineLength, 8);
+                    const vineMaterial = new THREE.MeshStandardMaterial({ color: 0x228B22 });
+                    
+                    // Create multiple vine segments
+                    for (let i = 0; i < 3; i++) {
+                        const vine = new THREE.Mesh(vineGeometry, vineMaterial);
+                        vine.position.set(
+                            Math.sin(i * Math.PI * 2/3) * vineLength * 0.7,
+                            0.05,
+                            Math.cos(i * Math.PI * 2/3) * vineLength * 0.7
+                        );
+                        vine.rotation.z = Math.PI/2;
+                        vine.rotation.y = i * Math.PI * 2/3;
+                        group.add(vine);
 
-            const scale = 1 + progress;
-            plant.mesh.scale.set(scale, scale, scale);
+                        // Add leaves after first watering
+                        if (growthStep > 0.33) {
+                            const leafGeometry = new THREE.CircleGeometry(0.1 + growthStep * 0.1, 5);
+                            const leafMaterial = new THREE.MeshStandardMaterial({ 
+                                color: 0x228B22,
+                                side: THREE.DoubleSide
+                            });
+                            const leaf = new THREE.Mesh(leafGeometry, leafMaterial);
+                            leaf.position.copy(vine.position);
+                            leaf.position.y = 0.02;
+                            leaf.rotation.x = -Math.PI/2;
+                            group.add(leaf);
+                        }
+                    }
+                }
+                break;
+                
+            case 'strawberry':
+                if (growthStep === 1) {
+                    // Final stage - full strawberry plant
+                    this.createStrawberryPlant(plant);
+                } else {
+                    // Growing stages - low spreading leaves, then berries
+                    const baseGeometry = new THREE.SphereGeometry(0.1 + growthStep * 0.1, 8, 8);
+                    const baseMaterial = new THREE.MeshStandardMaterial({ color: 0x228B22 });
+                    const base = new THREE.Mesh(baseGeometry, baseMaterial);
+                    base.position.y = 0.1;
+                    base.scale.set(1, 0.3, 1);
+                    group.add(base);
 
-            if (progress < 1) {
-                requestAnimationFrame(animate);
-            } else {
-                // Plant is ready for harvest
-                plant.mesh.material.color.setHex(0xFFD700); // Golden color
-                plant.isHarvestable = true;
-            }
-        };
+                    // Add leaves after first watering
+                    if (growthStep > 0.33) {
+                        const leafCount = Math.floor(2 + growthStep * 4);
+                        const leafGeometry = new THREE.CircleGeometry(0.1, 3);
+                        const leafMaterial = new THREE.MeshStandardMaterial({ 
+                            color: 0x228B22,
+                            side: THREE.DoubleSide
+                        });
+                        
+                        for (let i = 0; i < leafCount; i++) {
+                            const leaf = new THREE.Mesh(leafGeometry, leafMaterial);
+                            leaf.position.set(
+                                Math.sin(i * Math.PI * 2/leafCount) * 0.15,
+                                0.05,
+                                Math.cos(i * Math.PI * 2/leafCount) * 0.15
+                            );
+                            leaf.rotation.x = -Math.PI/2;
+                            leaf.rotation.z = i * Math.PI * 2/leafCount;
+                            group.add(leaf);
+                        }
+                    }
+                }
+                break;
+        }
 
-        requestAnimationFrame(animate);
+        // Position the group at the plant's location
+        if (plant.mesh.position) {
+            group.position.copy(plant.mesh.position);
+        }
+        
+        // Update the plant's mesh reference
+        this.scene.add(group);
+        plant.mesh = group;
+
+        // Mark as harvestable when fully grown
+        if (growthStep === 1) {
+            plant.isHarvestable = true;
+        }
+    }
+
+    createTomatoPlant(plant) {
+        // Remove the original sprout
+        this.scene.remove(plant.mesh);
+        
+        // Create plant group
+        const group = new THREE.Group();
+        
+        // Create stem
+        const stemGeometry = new THREE.CylinderGeometry(0.05, 0.08, 1, 8);
+        const stemMaterial = new THREE.MeshStandardMaterial({ color: 0x228B22 });
+        const stem = new THREE.Mesh(stemGeometry, stemMaterial);
+        stem.position.y = 0.5;
+        group.add(stem);
+        
+        // Create tomatoes
+        const tomatoGeometry = new THREE.SphereGeometry(0.15, 8, 8);
+        const tomatoMaterial = new THREE.MeshStandardMaterial({ color: 0xFF6347 });
+        
+        // Add multiple tomatoes
+        for (let i = 0; i < 3; i++) {
+            const tomato = new THREE.Mesh(tomatoGeometry, tomatoMaterial);
+            tomato.position.set(
+                Math.sin(i * Math.PI * 2/3) * 0.2,
+                0.7 + Math.random() * 0.3,
+                Math.cos(i * Math.PI * 2/3) * 0.2
+            );
+            group.add(tomato);
+        }
+        
+        // Add leaves
+        const leafGeometry = new THREE.PlaneGeometry(0.2, 0.3);
+        const leafMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x228B22,
+            side: THREE.DoubleSide
+        });
+        
+        for (let i = 0; i < 4; i++) {
+            const leaf = new THREE.Mesh(leafGeometry, leafMaterial);
+            leaf.position.set(
+                Math.sin(i * Math.PI/2) * 0.2,
+                0.3 + Math.random() * 0.4,
+                Math.cos(i * Math.PI/2) * 0.2
+            );
+            leaf.rotation.set(
+                Math.random() * Math.PI/4,
+                i * Math.PI/2,
+                Math.random() * Math.PI/4
+            );
+            group.add(leaf);
+        }
+        
+        group.position.copy(plant.mesh.position);
+        this.scene.add(group);
+        plant.mesh = group;
+    }
+
+    createCornPlant(plant) {
+        // Remove the original sprout
+        this.scene.remove(plant.mesh);
+        
+        // Create plant group
+        const group = new THREE.Group();
+        
+        // Create tall stalk
+        const stalkGeometry = new THREE.CylinderGeometry(0.05, 0.08, 2, 8);
+        const stalkMaterial = new THREE.MeshStandardMaterial({ color: 0x90EE90 });
+        const stalk = new THREE.Mesh(stalkGeometry, stalkMaterial);
+        stalk.position.y = 1;
+        group.add(stalk);
+        
+        // Create corn ears
+        const cornGeometry = new THREE.CylinderGeometry(0.08, 0.1, 0.4, 8);
+        const cornMaterial = new THREE.MeshStandardMaterial({ color: 0xFFD700 });
+        
+        // Add two ears of corn
+        for (let i = 0; i < 2; i++) {
+            const corn = new THREE.Mesh(cornGeometry, cornMaterial);
+            corn.position.set(
+                Math.sin(i * Math.PI) * 0.2,
+                1.2,
+                Math.cos(i * Math.PI) * 0.2
+            );
+            corn.rotation.z = Math.PI/4;
+            group.add(corn);
+        }
+        
+        group.position.copy(plant.mesh.position);
+        this.scene.add(group);
+        plant.mesh = group;
+    }
+
+    createMelonPlant(plant) {
+        // Remove the original sprout
+        this.scene.remove(plant.mesh);
+        
+        // Create plant group
+        const group = new THREE.Group();
+        
+        // Create vine base
+        const vineGeometry = new THREE.CylinderGeometry(0.03, 0.03, 0.3, 8);
+        const vineMaterial = new THREE.MeshStandardMaterial({ color: 0x228B22 });
+        const vine = new THREE.Mesh(vineGeometry, vineMaterial);
+        vine.position.y = 0.15;
+        group.add(vine);
+        
+        // Create melon
+        const melonGeometry = new THREE.SphereGeometry(0.25, 12, 12);
+        const melonMaterial = new THREE.MeshStandardMaterial({ color: 0x90EE90 });
+        const melon = new THREE.Mesh(melonGeometry, melonMaterial);
+        melon.position.y = 0.25;
+        group.add(melon);
+        
+        // Add leaves
+        const leafGeometry = new THREE.CircleGeometry(0.2, 5);
+        const leafMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x228B22,
+            side: THREE.DoubleSide
+        });
+        
+        for (let i = 0; i < 3; i++) {
+            const leaf = new THREE.Mesh(leafGeometry, leafMaterial);
+            leaf.position.set(
+                Math.sin(i * Math.PI * 2/3) * 0.3,
+                0.05,
+                Math.cos(i * Math.PI * 2/3) * 0.3
+            );
+            leaf.rotation.x = -Math.PI/2;
+            group.add(leaf);
+        }
+        
+        group.position.copy(plant.mesh.position);
+        this.scene.add(group);
+        plant.mesh = group;
+    }
+
+    createStrawberryPlant(plant) {
+        // Remove the original sprout
+        this.scene.remove(plant.mesh);
+        
+        // Create plant group
+        const group = new THREE.Group();
+        
+        // Create plant base
+        const baseGeometry = new THREE.SphereGeometry(0.2, 8, 8);
+        const baseMaterial = new THREE.MeshStandardMaterial({ color: 0x228B22 });
+        const base = new THREE.Mesh(baseGeometry, baseMaterial);
+        base.position.y = 0.2;
+        base.scale.set(1, 0.5, 1);
+        group.add(base);
+        
+        // Create strawberries
+        const berryGeometry = new THREE.SphereGeometry(0.08, 8, 8);
+        const berryMaterial = new THREE.MeshStandardMaterial({ color: 0xFF0000 });
+        
+        for (let i = 0; i < 4; i++) {
+            const berry = new THREE.Mesh(berryGeometry, berryMaterial);
+            berry.position.set(
+                Math.sin(i * Math.PI/2) * 0.15,
+                0.15,
+                Math.cos(i * Math.PI/2) * 0.15
+            );
+            group.add(berry);
+        }
+        
+        group.position.copy(plant.mesh.position);
+        this.scene.add(group);
+        plant.mesh = group;
     }
 
     harvestPlant(key) {
@@ -996,6 +1325,17 @@ class GardenGame {
         this.scene.remove(plant.mesh);
         this.plants.delete(key);
         this.tilledSoil.delete(key);
+    }
+
+    updateSeedTooltip() {
+        if (!this.selectedSeed || this.inventoryVisible) {
+            this.seedTooltip.style.display = 'none';
+            return;
+        }
+
+        const item = this.inventory[this.selectedSeed];
+        this.seedTooltip.textContent = `Selected: ${item.name} (${item.count} remaining)`;
+        this.seedTooltip.style.display = 'block';
     }
 }
 

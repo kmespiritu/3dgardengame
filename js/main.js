@@ -25,6 +25,9 @@ class GardenGame {
         this.raycaster = new THREE.Raycaster();
         this.mouse = new THREE.Vector2();
 
+        // Interactable objects
+        this.interactables = new Map();
+
         // Jump physics
         this.canJump = true;
         this.isJumping = false;
@@ -41,12 +44,11 @@ class GardenGame {
             strawberry: { count: 5, icon: '🍓', name: 'Strawberry Seeds' }
         };
         this.inventoryVisible = false;
+        this.mailboxVisible = false;
 
         // Game state
         this.isPlaying = false;
-
-        // Obstacles
-        this.obstacles = [];
+        this.savedGames = JSON.parse(localStorage.getItem('gardenGameSaves') || '{}');
 
         // Cursor highlight
         this.cursorHighlight = null;
@@ -66,6 +68,7 @@ class GardenGame {
         this.setupInventoryUI();
         this.createObstacles();
         this.createCursorHighlight();
+        this.createLogCabin();
         this.animate();
     }
 
@@ -124,7 +127,7 @@ class GardenGame {
         document.body.appendChild(blocker);
 
         blocker.addEventListener('click', () => {
-            if (!this.inventoryVisible) {
+            if (!this.inventoryVisible && !this.mailboxVisible) {
                 this.controls.lock();
             }
         });
@@ -135,7 +138,7 @@ class GardenGame {
         });
 
         this.controls.addEventListener('unlock', () => {
-            if (!this.inventoryVisible) {
+            if (!this.inventoryVisible && !this.mailboxVisible) {
                 blocker.style.display = 'flex';
                 this.isPlaying = false;
             }
@@ -143,7 +146,26 @@ class GardenGame {
 
         // Handle clicking for all interactions
         const handleClick = () => {
-            if (!this.isPlaying || this.inventoryVisible) return;
+            if (!this.isPlaying || this.inventoryVisible || this.mailboxVisible) return; // Early return if inventory or mailbox is open
+
+            // Check for mailbox interaction first
+            const raycaster = new THREE.Raycaster();
+            raycaster.setFromCamera(new THREE.Vector2(), this.camera);
+            
+            // Check interactables first
+            for (const [_, interactable] of this.interactables) {
+                const intersects = raycaster.intersectObject(interactable, true);
+                if (intersects.length > 0 && intersects[0].distance <= 5) {
+                    let object = intersects[0].object;
+                    while (object.parent && !object.userData.interactable) {
+                        object = object.parent;
+                    }
+                    if (object.userData.interactable) {
+                        object.userData.action();
+                        return;
+                    }
+                }
+            }
 
             const gridPosition = this.getGridPosition();
             if (!gridPosition) return;
@@ -165,11 +187,9 @@ class GardenGame {
                     break;
                 case 'axe':
                     // Handle obstacle interaction
-                    const raycaster = new THREE.Raycaster();
-                    raycaster.setFromCamera(new THREE.Vector2(), this.camera);
-                    const intersects = raycaster.intersectObjects(this.obstacles, true);
-                    if (intersects.length > 0) {
-                        let obstacle = intersects[0].object;
+                    const obstacleIntersects = raycaster.intersectObjects(this.obstacles, true);
+                    if (obstacleIntersects.length > 0) {
+                        let obstacle = obstacleIntersects[0].object;
                         while (obstacle.parent && !obstacle.userData.type) {
                             obstacle = obstacle.parent;
                         }
@@ -721,11 +741,7 @@ class GardenGame {
     createTree(x, z) {
         // Create tree trunk
         const trunkGeometry = new THREE.CylinderGeometry(0.2, 0.3, 2, 8);
-        const trunkMaterial = new THREE.MeshStandardMaterial({ 
-            color: 0x8B4513,
-            roughness: 0.8,
-            metalness: 0.2
-        });
+        const trunkMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
         const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
         trunk.position.set(x, 1, z);
         trunk.castShadow = true;
@@ -1336,6 +1352,497 @@ class GardenGame {
         const item = this.inventory[this.selectedSeed];
         this.seedTooltip.textContent = `Selected: ${item.name} (${item.count} remaining)`;
         this.seedTooltip.style.display = 'block';
+    }
+
+    createLogCabin() {
+        const cabin = new THREE.Group();
+        
+        // Create base walls first
+        const wallsGeometry = new THREE.BoxGeometry(6, 4, 4);
+        const wallsMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x8B4513,
+            roughness: 0.9,
+            metalness: 0.1
+        });
+        const baseWalls = new THREE.Mesh(wallsGeometry, wallsMaterial);
+        baseWalls.position.y = 2;
+        cabin.add(baseWalls);
+
+        // Add horizontal logs to all four walls
+        const logCount = 8;
+        const logSpacing = 4 / logCount;
+        const logGeometry = new THREE.CylinderGeometry(0.2, 0.2, 6, 8);
+        const logMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x8B4513,
+            roughness: 0.9,
+            metalness: 0.1
+        });
+
+        // Front and back walls
+        for (let i = 0; i < logCount; i++) {
+            // Front wall logs
+            const frontLog = new THREE.Mesh(logGeometry, logMaterial);
+            frontLog.rotation.z = Math.PI / 2;
+            frontLog.position.set(0, i * logSpacing, 2);
+            cabin.add(frontLog);
+
+            // Back wall logs
+            const backLog = new THREE.Mesh(logGeometry, logMaterial);
+            backLog.rotation.z = Math.PI / 2;
+            backLog.position.set(0, i * logSpacing, -2);
+            cabin.add(backLog);
+        }
+
+        // Side walls
+        const sideLogGeometry = new THREE.CylinderGeometry(0.2, 0.2, 4, 8);
+        for (let i = 0; i < logCount; i++) {
+            // Left wall logs
+            const leftLog = new THREE.Mesh(sideLogGeometry, logMaterial);
+            leftLog.rotation.set(0, Math.PI / 2, Math.PI / 2);
+            leftLog.position.set(-3, i * logSpacing, 0);
+            cabin.add(leftLog);
+
+            // Right wall logs
+            const rightLog = new THREE.Mesh(sideLogGeometry, logMaterial);
+            rightLog.rotation.set(0, Math.PI / 2, Math.PI / 2);
+            rightLog.position.set(3, i * logSpacing, 0);
+            cabin.add(rightLog);
+        }
+
+        // Create the roof with shingle texture
+        const roofGeometry = new THREE.ConeGeometry(4.5, 2, 4);
+        const roofMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x4A2800,
+            roughness: 0.8,
+            metalness: 0.2,
+            // Add shingle pattern
+            bumpScale: 0.1
+        });
+        const roof = new THREE.Mesh(roofGeometry, roofMaterial);
+        roof.position.y = 5;
+        roof.rotation.y = Math.PI / 4; // Rotate 45 degrees to align with square base
+        cabin.add(roof);
+
+        // Add a more detailed door with frame
+        const doorFrame = new THREE.Group();
+        
+        const doorGeometry = new THREE.PlaneGeometry(1, 2);
+        const doorMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x4A2800,
+            roughness: 0.9,
+            metalness: 0.2,
+            side: THREE.DoubleSide
+        });
+        const door = new THREE.Mesh(doorGeometry, doorMaterial);
+        
+        // Add door frame
+        const frameGeometry = new THREE.BoxGeometry(1.2, 2.2, 0.1);
+        const frameMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+        const frame = new THREE.Mesh(frameGeometry, frameMaterial);
+        
+        doorFrame.add(frame);
+        doorFrame.add(door);
+        doorFrame.position.set(0, 1, 2.01);
+        cabin.add(doorFrame);
+
+        // Add windows with frames
+        const createWindow = (x) => {
+            const windowGroup = new THREE.Group();
+            
+            // Window frame
+            const frameGeometry = new THREE.BoxGeometry(1.2, 1.2, 0.1);
+            const frameMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+            const frame = new THREE.Mesh(frameGeometry, frameMaterial);
+            
+            // Window panes
+            const paneGeometry = new THREE.PlaneGeometry(0.5, 0.5);
+            const paneMaterial = new THREE.MeshStandardMaterial({ 
+                color: 0x87CEEB,
+                roughness: 0.3,
+                metalness: 0.5,
+                opacity: 0.7,
+                transparent: true,
+                side: THREE.DoubleSide
+            });
+            
+            // Create four panes
+            const panePositions = [
+                [-0.25, 0.25], [0.25, 0.25],
+                [-0.25, -0.25], [0.25, -0.25]
+            ];
+            
+            panePositions.forEach(([px, py]) => {
+                const pane = new THREE.Mesh(paneGeometry, paneMaterial);
+                pane.position.set(px, py, 0);
+                windowGroup.add(pane);
+            });
+            
+            windowGroup.add(frame);
+            windowGroup.position.set(x, 2, 2.01);
+            return windowGroup;
+        };
+
+        cabin.add(createWindow(-1.5));
+        cabin.add(createWindow(1.5));
+
+        // Add a chimney
+        const chimneyGeometry = new THREE.BoxGeometry(0.6, 2, 0.6);
+        const chimneyMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x8B4513,
+            roughness: 1,
+            metalness: 0
+        });
+        const chimney = new THREE.Mesh(chimneyGeometry, chimneyMaterial);
+        chimney.position.set(2, 5, 0);
+        cabin.add(chimney);
+
+        // Create and add the mailbox
+        const mailbox = this.createMailbox();
+        mailbox.position.set(4, 0, 2);
+        cabin.add(mailbox);
+
+        // Position the cabin near spawn point (no rotation)
+        cabin.position.set(8, 0, 8);
+
+        this.scene.add(cabin);
+    }
+
+    createMailbox() {
+        const mailboxGroup = new THREE.Group();
+
+        // Create the post
+        const postGeometry = new THREE.BoxGeometry(0.1, 1.2, 0.1);
+        const postMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+        const post = new THREE.Mesh(postGeometry, postMaterial);
+        post.position.y = 0.6;
+        mailboxGroup.add(post);
+
+        // Create the mailbox body
+        const boxGeometry = new THREE.BoxGeometry(0.4, 0.3, 0.6);
+        const boxMaterial = new THREE.MeshStandardMaterial({ color: 0x4A4A4A });
+        const box = new THREE.Mesh(boxGeometry, boxMaterial);
+        box.position.y = 1.2;
+        mailboxGroup.add(box);
+
+        // Add interaction data
+        mailboxGroup.userData = {
+            type: 'mailbox',
+            interactable: true,
+            action: () => this.openMailboxMenu()
+        };
+
+        // Add to interactables
+        this.interactables.set('mailbox', mailboxGroup);
+
+        return mailboxGroup;
+    }
+
+    openMailboxMenu() {
+        this.mailboxVisible = true;
+        // Create mailbox menu container
+        const menu = document.createElement('div');
+        menu.id = 'mailbox-menu';
+        menu.style.position = 'fixed';
+        menu.style.top = '50%';
+        menu.style.left = '50%';
+        menu.style.transform = 'translate(-50%, -50%)';
+        menu.style.backgroundColor = 'rgba(0, 0, 0, 0.9)';
+        menu.style.padding = '20px';
+        menu.style.borderRadius = '10px';
+        menu.style.color = 'white';
+        menu.style.zIndex = '1000';
+        menu.style.minWidth = '300px';
+
+        // Hide the blocker
+        const blocker = document.getElementById('blocker');
+        if (blocker) {
+            blocker.style.display = 'none';
+        }
+
+        // Add title
+        const title = document.createElement('div');
+        title.style.fontSize = '24px';
+        title.style.marginBottom = '15px';
+        title.style.textAlign = 'center';
+        title.style.borderBottom = '2px solid rgba(255, 255, 255, 0.3)';
+        title.style.paddingBottom = '10px';
+        title.textContent = 'Mailbox';
+        menu.appendChild(title);
+
+        // Add menu options
+        const options = [
+            { text: 'Save Game', action: () => this.saveGame() },
+            { text: 'Load Game', action: () => this.loadGame() },
+            { text: 'Messages', action: () => this.openMessages() },
+            { text: 'Settings', action: () => this.openSettings() },
+            { text: 'Close', action: () => this.closeMailboxMenu() }
+        ];
+
+        options.forEach(option => {
+            const button = document.createElement('button');
+            button.textContent = option.text;
+            button.style.display = 'block';
+            button.style.width = '100%';
+            button.style.padding = '10px';
+            button.style.margin = '5px 0';
+            button.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+            button.style.border = 'none';
+            button.style.color = 'white';
+            button.style.cursor = 'pointer';
+            button.style.borderRadius = '5px';
+            button.style.transition = 'background-color 0.2s';
+            button.addEventListener('mouseover', () => {
+                button.style.backgroundColor = 'rgba(255, 255, 255, 0.2)';
+            });
+            button.addEventListener('mouseout', () => {
+                button.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+            });
+            button.onclick = option.action; // Changed to direct assignment for more reliable event handling
+            menu.appendChild(button);
+        });
+
+        document.body.appendChild(menu);
+        this.controls.unlock();
+        document.body.style.cursor = 'default';
+    }
+
+    closeMailboxMenu() {
+        this.mailboxVisible = false;
+        const menu = document.getElementById('mailbox-menu');
+        if (menu) {
+            document.body.removeChild(menu);
+            if (this.isPlaying) {
+                this.controls.lock();
+                document.body.style.cursor = 'none';
+            }
+        }
+    }
+
+    // Placeholder methods for mailbox menu actions
+    saveGame() {
+        // Create save game dialog
+        const saveDialog = document.createElement('div');
+        saveDialog.style.position = 'fixed';
+        saveDialog.style.top = '50%';
+        saveDialog.style.left = '50%';
+        saveDialog.style.transform = 'translate(-50%, -50%)';
+        saveDialog.style.backgroundColor = 'rgba(0, 0, 0, 0.95)';
+        saveDialog.style.padding = '20px';
+        saveDialog.style.borderRadius = '10px';
+        saveDialog.style.color = 'white';
+        saveDialog.style.zIndex = '2000';
+        saveDialog.style.minWidth = '300px';
+
+        const title = document.createElement('div');
+        title.textContent = 'Save Game';
+        title.style.fontSize = '20px';
+        title.style.marginBottom = '15px';
+        title.style.textAlign = 'center';
+        saveDialog.appendChild(title);
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.placeholder = 'Enter save name...';
+        input.style.width = '100%';
+        input.style.padding = '8px';
+        input.style.marginBottom = '15px';
+        input.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+        input.style.border = '1px solid rgba(255, 255, 255, 0.3)';
+        input.style.borderRadius = '5px';
+        input.style.color = 'white';
+        saveDialog.appendChild(input);
+
+        const buttonContainer = document.createElement('div');
+        buttonContainer.style.display = 'flex';
+        buttonContainer.style.gap = '10px';
+
+        const saveButton = document.createElement('button');
+        saveButton.textContent = 'Save';
+        saveButton.style.flex = '1';
+        saveButton.style.padding = '8px';
+        saveButton.style.backgroundColor = 'rgba(255, 255, 255, 0.2)';
+        saveButton.style.border = 'none';
+        saveButton.style.borderRadius = '5px';
+        saveButton.style.color = 'white';
+        saveButton.style.cursor = 'pointer';
+
+        const cancelButton = document.createElement('button');
+        cancelButton.textContent = 'Cancel';
+        cancelButton.style.flex = '1';
+        cancelButton.style.padding = '8px';
+        cancelButton.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+        cancelButton.style.border = 'none';
+        cancelButton.style.borderRadius = '5px';
+        cancelButton.style.color = 'white';
+        cancelButton.style.cursor = 'pointer';
+
+        buttonContainer.appendChild(saveButton);
+        buttonContainer.appendChild(cancelButton);
+        saveDialog.appendChild(buttonContainer);
+
+        // Handle save action
+        saveButton.addEventListener('click', () => {
+            const saveName = input.value.trim();
+            if (saveName) {
+                const gameState = {
+                    inventory: this.inventory,
+                    plants: Array.from(this.plants.entries()),
+                    tilledSoil: Array.from(this.tilledSoil.keys()),
+                    timestamp: new Date().toLocaleString()
+                };
+                
+                this.savedGames[saveName] = gameState;
+                localStorage.setItem('gardenGameSaves', JSON.stringify(this.savedGames));
+                document.body.removeChild(saveDialog);
+            }
+        });
+
+        cancelButton.addEventListener('click', () => {
+            document.body.removeChild(saveDialog);
+        });
+
+        document.body.appendChild(saveDialog);
+    }
+
+    loadGame() {
+        // Create load game dialog
+        const loadDialog = document.createElement('div');
+        loadDialog.style.position = 'fixed';
+        loadDialog.style.top = '50%';
+        loadDialog.style.left = '50%';
+        loadDialog.style.transform = 'translate(-50%, -50%)';
+        loadDialog.style.backgroundColor = 'rgba(0, 0, 0, 0.95)';
+        loadDialog.style.padding = '20px';
+        loadDialog.style.borderRadius = '10px';
+        loadDialog.style.color = 'white';
+        loadDialog.style.zIndex = '2000';
+        loadDialog.style.minWidth = '300px';
+        loadDialog.style.maxHeight = '80vh';
+        loadDialog.style.overflowY = 'auto';
+
+        const title = document.createElement('div');
+        title.textContent = 'Load Game';
+        title.style.fontSize = '20px';
+        title.style.marginBottom = '15px';
+        title.style.textAlign = 'center';
+        loadDialog.appendChild(title);
+
+        const savesList = document.createElement('div');
+        savesList.style.marginBottom = '15px';
+
+        // Add saved games to the list
+        Object.entries(this.savedGames).forEach(([saveName, saveData]) => {
+            const saveItem = document.createElement('div');
+            saveItem.style.padding = '10px';
+            saveItem.style.marginBottom = '5px';
+            saveItem.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+            saveItem.style.borderRadius = '5px';
+            saveItem.style.cursor = 'pointer';
+
+            const saveTitleDiv = document.createElement('div');
+            saveTitleDiv.textContent = saveName;
+            saveTitleDiv.style.marginBottom = '5px';
+
+            const saveTimeDiv = document.createElement('div');
+            saveTimeDiv.textContent = saveData.timestamp;
+            saveTimeDiv.style.fontSize = '12px';
+            saveTimeDiv.style.opacity = '0.7';
+
+            saveItem.appendChild(saveTitleDiv);
+            saveItem.appendChild(saveTimeDiv);
+
+            saveItem.addEventListener('mouseenter', () => {
+                saveItem.style.backgroundColor = 'rgba(255, 255, 255, 0.2)';
+            });
+
+            saveItem.addEventListener('mouseleave', () => {
+                saveItem.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+            });
+
+            saveItem.addEventListener('click', () => {
+                this.loadSaveGame(saveData);
+                document.body.removeChild(loadDialog);
+                this.closeMailboxMenu();
+            });
+
+            savesList.appendChild(saveItem);
+        });
+
+        loadDialog.appendChild(savesList);
+
+        const closeButton = document.createElement('button');
+        closeButton.textContent = 'Close';
+        closeButton.style.width = '100%';
+        closeButton.style.padding = '8px';
+        closeButton.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+        closeButton.style.border = 'none';
+        closeButton.style.borderRadius = '5px';
+        closeButton.style.color = 'white';
+        closeButton.style.cursor = 'pointer';
+
+        closeButton.addEventListener('click', () => {
+            document.body.removeChild(loadDialog);
+        });
+
+        loadDialog.appendChild(closeButton);
+        document.body.appendChild(loadDialog);
+    }
+
+    loadSaveGame(saveData) {
+        // Clear existing game state
+        this.plants.forEach(plant => this.scene.remove(plant.mesh));
+        this.tilledSoil.forEach(soil => this.scene.remove(soil));
+        this.plants.clear();
+        this.tilledSoil.clear();
+
+        // Restore inventory
+        this.inventory = saveData.inventory;
+        this.updateInventoryDisplay();
+
+        // Restore plants
+        saveData.plants.forEach(([key, plantData]) => {
+            const [x, z] = key.split(',').map(Number);
+            const position = { x, z };
+            this.tillSoil(key, position);
+            
+            // Recreate the plant
+            const plantGeometry = new THREE.ConeGeometry(0.1, 0.2, 8);
+            const plantMaterial = new THREE.MeshStandardMaterial({
+                color: 0x90EE90
+            });
+            const plant = new THREE.Mesh(plantGeometry, plantMaterial);
+            plant.position.set(x, 0.1, z);
+            this.scene.add(plant);
+
+            this.plants.set(key, {
+                mesh: plant,
+                type: plantData.type,
+                growth: plantData.growth,
+                waterCount: plantData.waterCount,
+                isHarvestable: plantData.isHarvestable
+            });
+
+            // If the plant was grown, update its appearance
+            if (plantData.waterCount > 0) {
+                this.growPlant(key, this.plants.get(key));
+            }
+        });
+
+        // Restore tilled soil
+        saveData.tilledSoil.forEach(key => {
+            const [x, z] = key.split(',').map(Number);
+            if (!this.tilledSoil.has(key)) {
+                this.tillSoil(key, { x, z });
+            }
+        });
+    }
+
+    openMessages() {
+        console.log('Messages functionality to be implemented');
+    }
+
+    openSettings() {
+        console.log('Settings functionality to be implemented');
     }
 }
 

@@ -37,11 +37,15 @@ class GardenGame {
         // Game state
         this.isPlaying = false;
 
+        // Obstacles
+        this.obstacles = [];
+
         this.init();
         this.setupScene();
         this.setupControls();
         this.setupUI();
         this.setupInventoryUI();
+        this.createObstacles();
         this.animate();
     }
 
@@ -116,6 +120,32 @@ class GardenGame {
                 this.isPlaying = false;
             }
         });
+
+        // Handle clicking on obstacles
+        const onClick = () => {
+            if (!this.isPlaying || this.inventoryVisible) return;
+
+            // Create a raycaster
+            const raycaster = new THREE.Raycaster();
+            raycaster.setFromCamera(new THREE.Vector2(), this.camera);
+
+            // Check for intersections with obstacles
+            const intersects = raycaster.intersectObjects(this.obstacles, true);
+            
+            if (intersects.length > 0) {
+                // Find the root obstacle (either the rock or the tree group)
+                let obstacle = intersects[0].object;
+                while (obstacle.parent && !obstacle.userData.type) {
+                    obstacle = obstacle.parent;
+                }
+                
+                if (obstacle.userData.type) {
+                    this.damageObstacle(obstacle);
+                }
+            }
+        };
+
+        document.addEventListener('click', onClick);
 
         // Setup movement controls
         const onKeyDown = (event) => {
@@ -512,6 +542,113 @@ class GardenGame {
         requestAnimationFrame(() => this.animate());
         this.updateMovement();
         this.renderer.render(this.scene, this.camera);
+    }
+
+    createObstacles() {
+        // Create trees
+        for (let i = 0; i < 10; i++) {
+            const x = (Math.random() - 0.5) * 80;
+            const z = (Math.random() - 0.5) * 80;
+            this.createTree(x, z);
+        }
+
+        // Create rocks
+        for (let i = 0; i < 5; i++) {
+            const x = (Math.random() - 0.5) * 80;
+            const z = (Math.random() - 0.5) * 80;
+            this.createRock(x, z);
+        }
+    }
+
+    createTree(x, z) {
+        // Create tree trunk
+        const trunkGeometry = new THREE.CylinderGeometry(0.2, 0.3, 2, 8);
+        const trunkMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x8B4513,
+            roughness: 0.8,
+            metalness: 0.2
+        });
+        const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+        trunk.position.set(x, 1, z);
+        trunk.castShadow = true;
+        trunk.receiveShadow = true;
+
+        // Create leaves
+        const leavesGeometry = new THREE.SphereGeometry(1, 8, 8);
+        const leavesMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x228B22,
+            roughness: 1,
+            metalness: 0
+        });
+        const leaves = new THREE.Mesh(leavesGeometry, leavesMaterial);
+        leaves.position.set(x, 2.5, z);
+        leaves.castShadow = true;
+        leaves.receiveShadow = true;
+
+        // Group the tree parts
+        const treeGroup = new THREE.Group();
+        treeGroup.add(trunk);
+        treeGroup.add(leaves);
+        
+        // Add metadata
+        treeGroup.userData.type = 'tree';
+        treeGroup.userData.health = 7; // Trees take 7 hits to break
+
+        this.scene.add(treeGroup);
+        this.obstacles.push(treeGroup);
+    }
+
+    createRock(x, z) {
+        // Create rock
+        const rockGeometry = new THREE.DodecahedronGeometry(0.8, 1);
+        const rockMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x808080,
+            roughness: 0.9,
+            metalness: 0.1
+        });
+        const rock = new THREE.Mesh(rockGeometry, rockMaterial);
+        rock.position.set(x, 0.4, z);
+        rock.rotation.set(
+            Math.random() * Math.PI,
+            Math.random() * Math.PI,
+            Math.random() * Math.PI
+        );
+        rock.castShadow = true;
+        rock.receiveShadow = true;
+
+        // Add metadata
+        rock.userData.type = 'rock';
+        rock.userData.health = 3; // Rocks take 3 hits to break
+
+        this.scene.add(rock);
+        this.obstacles.push(rock);
+    }
+
+    damageObstacle(obstacle) {
+        // Decrease health
+        obstacle.userData.health--;
+
+        // Visual feedback based on type
+        if (obstacle.userData.type === 'tree') {
+            // Change leaf color based on damage
+            const leaves = obstacle.children[1];
+            const damageColor = new THREE.Color(0x228B22); // Start with healthy green
+            damageColor.lerp(new THREE.Color(0x654321), 1 - (obstacle.userData.health / 7));
+            leaves.material.color = damageColor;
+        } else if (obstacle.userData.type === 'rock') {
+            // Scale rock based on damage
+            const scale = 0.7 + (obstacle.userData.health * 0.1);
+            obstacle.scale.set(scale, scale, scale);
+        }
+
+        // Remove if destroyed
+        if (obstacle.userData.health <= 0) {
+            this.scene.remove(obstacle);
+            const index = this.obstacles.indexOf(obstacle);
+            if (index > -1) {
+                this.obstacles.splice(index, 1);
+            }
+        }
     }
 }
 

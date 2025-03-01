@@ -17,6 +17,14 @@ class GardenGame {
         this.direction = new THREE.Vector3();
         this.prevTime = performance.now();
 
+        // Game objects
+        this.obstacles = [];
+        this.selectedTool = 'Axe';
+        this.groundSize = 100;
+        this.tileSize = 1;
+        this.raycaster = new THREE.Raycaster();
+        this.mouse = new THREE.Vector2();
+
         // Jump physics
         this.canJump = true;
         this.isJumping = false;
@@ -214,7 +222,7 @@ class GardenGame {
         this.scene.add(directionalLight);
 
         // Add ground plane
-        const groundSize = 100;
+        const groundSize = this.groundSize;
         const groundSegments = 100;
         const groundGeometry = new THREE.PlaneGeometry(groundSize, groundSize);
         const groundMaterial = new THREE.MeshStandardMaterial({ 
@@ -241,14 +249,14 @@ class GardenGame {
 
         const detailGround = new THREE.Mesh(detailGroundGeometry, detailGroundMaterial);
         detailGround.rotation.x = -Math.PI / 2;
-        detailGround.position.y = 0.01; // Slightly above the base ground
+        detailGround.position.y = 0.01;
         detailGround.receiveShadow = true;
 
-        // Add subtle ground variation with smoother transitions
+        // Add subtle ground variation
         const vertices = detailGroundGeometry.attributes.position.array;
         for (let i = 0; i <= groundSegments; i++) {
             for (let j = 0; j <= groundSegments; j++) {
-                const index = (i * (groundSegments + 1) + j) * 3 + 1; // Y coordinate
+                const index = (i * (groundSegments + 1) + j) * 3 + 1;
                 vertices[index] = (Math.cos(i * 0.3) * Math.sin(j * 0.3) * 0.2) +
                                 (Math.sin(i * 0.7) * Math.cos(j * 0.7) * 0.1);
             }
@@ -257,17 +265,80 @@ class GardenGame {
         detailGroundGeometry.computeVertexNormals();
         this.scene.add(detailGround);
 
-        // Add grid helper (matching ground size)
+        // Add grid helper
         const gridHelper = new THREE.GridHelper(groundSize, groundSize, 0x000000, 0x000000);
         gridHelper.material.opacity = 0.2;
         gridHelper.material.transparent = true;
-        gridHelper.position.y = 0.02; // Slightly above the detail ground
+        gridHelper.position.y = 0.02;
         this.scene.add(gridHelper);
+
+        // Create and place obstacles
+        this.createObstacles();
+    }
+
+    createTree(x, z) {
+        // Create tree trunk
+        const trunkGeometry = new THREE.CylinderGeometry(0.2, 0.3, 2, 8);
+        const trunkMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+        const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+        trunk.position.set(x, 1, z);
+        trunk.castShadow = true;
+        trunk.receiveShadow = true;
+
+        // Create tree top (leaves)
+        const leavesGeometry = new THREE.ConeGeometry(1, 2, 8);
+        const leavesMaterial = new THREE.MeshStandardMaterial({ color: 0x2D5A27 });
+        const leaves = new THREE.Mesh(leavesGeometry, leavesMaterial);
+        leaves.position.set(0, 1.5, 0);
+        leaves.castShadow = true;
+        trunk.add(leaves);
+
+        trunk.userData = { type: 'tree' };
+        return trunk;
+    }
+
+    createRock(x, z) {
+        // Create rock
+        const rockGeometry = new THREE.DodecahedronGeometry(0.5);
+        const rockMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x808080,
+            roughness: 0.8,
+            metalness: 0.2
+        });
+        const rock = new THREE.Mesh(rockGeometry, rockMaterial);
+        rock.position.set(x, 0.5, z);
+        rock.rotation.set(
+            Math.random() * Math.PI,
+            Math.random() * Math.PI,
+            Math.random() * Math.PI
+        );
+        rock.castShadow = true;
+        rock.receiveShadow = true;
+        rock.userData = { type: 'rock' };
+        return rock;
+    }
+
+    createObstacles() {
+        const totalTiles = (this.groundSize / this.tileSize) * (this.groundSize / this.tileSize);
+        const obstacleCount = Math.floor(totalTiles * 0.02); // 2% of tiles
+        const halfGroundSize = this.groundSize / 2;
+
+        for (let i = 0; i < obstacleCount; i++) {
+            // Random position within ground bounds
+            const x = (Math.random() * this.groundSize) - halfGroundSize;
+            const z = (Math.random() * this.groundSize) - halfGroundSize;
+
+            // Create either a tree or rock
+            const obstacle = Math.random() < 0.7 ? this.createTree(x, z) : this.createRock(x, z);
+            this.obstacles.push(obstacle);
+            this.scene.add(obstacle);
+        }
     }
 
     setupUI() {
         // Create toolbar container
         const toolbar = document.createElement('div');
+        toolbar.id = 'toolbar';
         toolbar.style.position = 'fixed';
         toolbar.style.bottom = '20px';
         toolbar.style.left = '50%';
@@ -317,12 +388,36 @@ class GardenGame {
                 // Highlight selected tool
                 toolElement.style.backgroundColor = 'rgba(255, 255, 255, 0.2)';
                 toolElement.style.border = '2px solid rgba(255, 255, 255, 0.5)';
+                this.selectedTool = tool.name;
             });
 
             toolbar.appendChild(toolElement);
         });
 
         document.body.appendChild(toolbar);
+
+        // Add click event listener for removing obstacles
+        document.addEventListener('click', (event) => {
+            if (!this.controls.isLocked || this.inventoryVisible) return;
+
+            // Calculate mouse position
+            this.mouse.x = 0;
+            this.mouse.y = 0;
+
+            // Update the picking ray with the camera and mouse position
+            this.raycaster.setFromCamera(this.mouse, this.camera);
+
+            // Calculate objects intersecting the picking ray
+            const intersects = this.raycaster.intersectObjects(this.obstacles);
+
+            if (intersects.length > 0 && this.selectedTool === 'Axe') {
+                const obstacle = intersects[0].object;
+                if (intersects[0].distance <= 5) { // Only remove if within range
+                    this.scene.remove(obstacle);
+                    this.obstacles = this.obstacles.filter(obj => obj !== obstacle);
+                }
+            }
+        });
     }
 
     setupInventoryUI() {

@@ -48,12 +48,23 @@ class GardenGame {
         // Obstacles
         this.obstacles = [];
 
+        // Cursor highlight
+        this.cursorHighlight = null;
+        this.gridSize = 1; // Size of each grid square
+
+        // Plant system
+        this.plants = new Map(); // Store plants and their states
+        this.selectedSeed = null;
+        this.wateringCount = new Map(); // Track watering for each plant
+        this.tilledSoil = new Map(); // Track tilled soil locations
+
         this.init();
         this.setupScene();
         this.setupControls();
         this.setupUI();
         this.setupInventoryUI();
         this.createObstacles();
+        this.createCursorHighlight();
         this.animate();
     }
 
@@ -129,31 +140,51 @@ class GardenGame {
             }
         });
 
-        // Handle clicking on obstacles
-        const onClick = () => {
+        // Handle clicking for all interactions
+        const handleClick = () => {
             if (!this.isPlaying || this.inventoryVisible) return;
 
-            // Create a raycaster
-            const raycaster = new THREE.Raycaster();
-            raycaster.setFromCamera(new THREE.Vector2(), this.camera);
+            const gridPosition = this.getGridPosition();
+            if (!gridPosition) return;
 
-            // Check for intersections with obstacles
-            const intersects = raycaster.intersectObjects(this.obstacles, true);
+            const key = `${gridPosition.x},${gridPosition.z}`;
             
-            if (intersects.length > 0) {
-                // Find the root obstacle (either the rock or the tree group)
-                let obstacle = intersects[0].object;
-                while (obstacle.parent && !obstacle.userData.type) {
-                    obstacle = obstacle.parent;
-                }
-                
-                if (obstacle.userData.type) {
-                    this.damageObstacle(obstacle);
-                }
+            switch (this.selectedTool) {
+                case 'hoe':
+                    this.tillSoil(key, gridPosition);
+                    break;
+                case 'water':
+                    this.waterPlant(key);
+                    break;
+                case 'axe':
+                    // Handle obstacle interaction
+                    const raycaster = new THREE.Raycaster();
+                    raycaster.setFromCamera(new THREE.Vector2(), this.camera);
+                    const intersects = raycaster.intersectObjects(this.obstacles, true);
+                    if (intersects.length > 0) {
+                        let obstacle = intersects[0].object;
+                        while (obstacle.parent && !obstacle.userData.type) {
+                            obstacle = obstacle.parent;
+                        }
+                        if (obstacle.userData.type) {
+                            this.damageObstacle(obstacle);
+                        }
+                    }
+                    break;
+            }
+
+            // Handle planting if a seed is selected
+            if (this.selectedSeed && this.tilledSoil.has(key)) {
+                this.plantSeed(key, gridPosition);
+            }
+
+            // Handle harvesting
+            if (this.plants.has(key) && this.plants.get(key).isHarvestable) {
+                this.harvestPlant(key);
             }
         };
 
-        document.addEventListener('click', onClick);
+        document.addEventListener('click', handleClick);
 
         // Setup movement controls
         const onKeyDown = (event) => {
@@ -382,9 +413,9 @@ class GardenGame {
 
         // Create tools
         const tools = [
-            { name: 'Axe', icon: '🪓' },
-            { name: 'Hoe', icon: '⛏️' },
-            { name: 'Water', icon: '💧' }
+            { name: 'Axe', icon: '🪓', type: 'axe' },
+            { name: 'Hoe', icon: '⛏️', type: 'hoe' },
+            { name: 'Water', icon: '💧', type: 'water' }
         ];
 
         tools.forEach((tool, index) => {
@@ -402,11 +433,13 @@ class GardenGame {
             toolElement.style.transition = 'all 0.2s';
             toolElement.innerHTML = tool.icon;
             toolElement.title = tool.name;
+            toolElement.dataset.toolType = tool.type;
 
             // Highlight first tool by default
             if (index === 0) {
                 toolElement.style.backgroundColor = 'rgba(255, 255, 255, 0.2)';
                 toolElement.style.border = '2px solid rgba(255, 255, 255, 0.5)';
+                this.selectedTool = tool.type;
             }
 
             toolElement.addEventListener('click', () => {
@@ -418,7 +451,7 @@ class GardenGame {
                 // Highlight selected tool
                 toolElement.style.backgroundColor = 'rgba(255, 255, 255, 0.2)';
                 toolElement.style.border = '2px solid rgba(255, 255, 255, 0.5)';
-                this.selectedTool = tool.name;
+                this.selectedTool = tool.type;
             });
 
             toolbar.appendChild(toolElement);
@@ -519,12 +552,23 @@ class GardenGame {
             itemElement.appendChild(icon);
             itemElement.appendChild(details);
 
+            // Add click handler for seed selection
+            itemElement.addEventListener('click', () => {
+                this.selectedSeed = itemId;
+                // Update visual feedback
+                grid.querySelectorAll('div').forEach(el => {
+                    el.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+                });
+                itemElement.style.backgroundColor = 'rgba(255, 255, 255, 0.3)';
+            });
+
             // Hover effect
             itemElement.addEventListener('mouseenter', () => {
                 itemElement.style.backgroundColor = 'rgba(255, 255, 255, 0.2)';
             });
             itemElement.addEventListener('mouseleave', () => {
-                itemElement.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+                itemElement.style.backgroundColor = this.selectedSeed === itemId ? 
+                    'rgba(255, 255, 255, 0.3)' : 'rgba(255, 255, 255, 0.1)';
             });
 
             grid.appendChild(itemElement);
@@ -636,6 +680,7 @@ class GardenGame {
     animate() {
         requestAnimationFrame(() => this.animate());
         this.updateMovement();
+        this.updateCursorHighlight();
         this.renderer.render(this.scene, this.camera);
     }
 
@@ -744,6 +789,213 @@ class GardenGame {
                 this.obstacles.splice(index, 1);
             }
         }
+    }
+
+    createCursorHighlight() {
+        // Create a cross marker geometry
+        const markerGeometry = new THREE.BufferGeometry();
+        const size = 0.5; // Size of the X marker
+        
+        // Create an X shape
+        const positions = new Float32Array([
+            -size, 0, -size,  // First line of X
+            size, 0, size,
+            -size, 0, size,   // Second line of X
+            size, 0, -size
+        ]);
+        
+        markerGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        
+        const markerMaterial = new THREE.LineBasicMaterial({ 
+            color: 0xff0000,
+            transparent: true,
+            opacity: 0.7
+        });
+        
+        // Create two line segments forming an X
+        this.cursorHighlight = new THREE.LineSegments(markerGeometry, markerMaterial);
+        this.cursorHighlight.visible = false;
+        this.scene.add(this.cursorHighlight);
+    }
+
+    updateCursorHighlight() {
+        if (!this.isPlaying || this.inventoryVisible) {
+            if (this.cursorHighlight) this.cursorHighlight.visible = false;
+            return;
+        }
+
+        // Create raycaster
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(new THREE.Vector2(), this.camera);
+
+        // Check intersection with ground
+        const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+        const intersectionPoint = new THREE.Vector3();
+        raycaster.ray.intersectPlane(groundPlane, intersectionPoint);
+
+        // Snap to grid
+        const snappedX = Math.round(intersectionPoint.x / this.gridSize) * this.gridSize;
+        const snappedZ = Math.round(intersectionPoint.z / this.gridSize) * this.gridSize;
+
+        // Update marker position
+        if (this.cursorHighlight) {
+            this.cursorHighlight.position.set(snappedX, 0.01, snappedZ);
+            this.cursorHighlight.visible = true;
+        }
+    }
+
+    getGridPosition() {
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(new THREE.Vector2(), this.camera);
+
+        const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+        const intersectionPoint = new THREE.Vector3();
+        
+        if (raycaster.ray.intersectPlane(groundPlane, intersectionPoint)) {
+            return {
+                x: Math.round(intersectionPoint.x / this.gridSize) * this.gridSize,
+                z: Math.round(intersectionPoint.z / this.gridSize) * this.gridSize
+            };
+        }
+        return null;
+    }
+
+    tillSoil(key, position) {
+        if (this.tilledSoil.has(key)) return;
+
+        // Create tilled soil visual
+        const soilGeometry = new THREE.PlaneGeometry(0.8, 0.8);
+        const soilMaterial = new THREE.MeshStandardMaterial({
+            color: 0x3d2817,
+            roughness: 1,
+            metalness: 0
+        });
+        const soil = new THREE.Mesh(soilGeometry, soilMaterial);
+        soil.rotation.x = -Math.PI / 2;
+        soil.position.set(position.x, 0.01, position.z);
+        this.scene.add(soil);
+
+        this.tilledSoil.set(key, soil);
+    }
+
+    plantSeed(key, position) {
+        if (this.plants.has(key) || !this.inventory[this.selectedSeed] || 
+            this.inventory[this.selectedSeed].count <= 0) return;
+
+        // Create plant visual
+        const plantGeometry = new THREE.SphereGeometry(0.2, 8, 8);
+        const plantMaterial = new THREE.MeshStandardMaterial({
+            color: 0x228B22,
+            roughness: 1,
+            metalness: 0
+        });
+        const plant = new THREE.Mesh(plantGeometry, plantMaterial);
+        plant.position.set(position.x, 0.2, position.z);
+        this.scene.add(plant);
+
+        // Store plant data
+        this.plants.set(key, {
+            mesh: plant,
+            type: this.selectedSeed,
+            growth: 0,
+            waterCount: 0
+        });
+
+        // Decrease seed count
+        this.inventory[this.selectedSeed].count--;
+        this.updateInventoryDisplay();
+    }
+
+    waterPlant(key) {
+        if (!this.plants.has(key)) return;
+
+        const plant = this.plants.get(key);
+        if (plant.waterCount >= 3 || plant.growth >= 1) return;
+
+        // Increment water count
+        plant.waterCount++;
+        
+        // Update growth
+        if (plant.waterCount === 3) {
+            plant.growth = 1;
+            this.growPlant(key, plant);
+        }
+
+        // Visual feedback for watering
+        this.createWaterEffect(plant.mesh.position);
+    }
+
+    createWaterEffect(position) {
+        const particles = new THREE.Points(
+            new THREE.BufferGeometry(),
+            new THREE.PointsMaterial({
+                color: 0x00ffff,
+                size: 0.05,
+                transparent: true,
+                opacity: 0.6
+            })
+        );
+
+        const particleCount = 20;
+        const positions = new Float32Array(particleCount * 3);
+
+        for (let i = 0; i < particleCount; i++) {
+            positions[i * 3] = position.x + (Math.random() - 0.5) * 0.5;
+            positions[i * 3 + 1] = position.y + Math.random() * 0.5;
+            positions[i * 3 + 2] = position.z + (Math.random() - 0.5) * 0.5;
+        }
+
+        particles.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        this.scene.add(particles);
+
+        // Remove particles after animation
+        setTimeout(() => {
+            this.scene.remove(particles);
+        }, 1000);
+    }
+
+    growPlant(key, plant) {
+        // Scale up the plant
+        const growthAnimation = {
+            scale: 1,
+            opacity: 1
+        };
+
+        const duration = 2000;
+        const startTime = performance.now();
+
+        const animate = (currentTime) => {
+            const elapsed = currentTime - startTime;
+            const progress = Math.min(elapsed / duration, 1);
+
+            const scale = 1 + progress;
+            plant.mesh.scale.set(scale, scale, scale);
+
+            if (progress < 1) {
+                requestAnimationFrame(animate);
+            } else {
+                // Plant is ready for harvest
+                plant.mesh.material.color.setHex(0xFFD700); // Golden color
+                plant.isHarvestable = true;
+            }
+        };
+
+        requestAnimationFrame(animate);
+    }
+
+    harvestPlant(key) {
+        const plant = this.plants.get(key);
+        if (!plant || !plant.isHarvestable) return;
+
+        // Add harvested item to inventory
+        const harvestedAmount = Math.floor(Math.random() * 3) + 1; // 1-3 items
+        this.inventory[plant.type].count += harvestedAmount;
+        this.updateInventoryDisplay();
+
+        // Remove plant
+        this.scene.remove(plant.mesh);
+        this.plants.delete(key);
+        this.tilledSoil.delete(key);
     }
 }
 
